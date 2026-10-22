@@ -258,6 +258,8 @@ function TxForm({ month, initial, onClose, onSaved }: {
     status: 'paid' as Transaction['status'],
     repeat: 'single' as RepeatMode,
     count: '2',
+    number: '1',            // "parcela X" de "X de Y"
+    amountMode: 'total' as 'total' | 'each',
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
@@ -278,21 +280,11 @@ function TxForm({ month, initial, onClose, onSaved }: {
       status: initial.status ?? 'paid',
       repeat: (initial.series_kind ?? 'single') as RepeatMode,
       count: String(initial.installment_total ?? 2),
+      number: String(initial.installment_number ?? 1),
+      // na edição o valor mostrado é o desta parcela; na inclusão, o total da compra
+      amountMode: initial.id ? 'each' : 'total',
     });
-
-    // Parcelado: no formulário o valor mostrado é o TOTAL da compra (soma das parcelas)
-    if (initial.series_id && initial.series_kind === 'installment') {
-      supabase
-        .from('transactions')
-        .select('amount')
-        .eq('series_id', initial.series_id)
-        .then(({ data }) => {
-          const rows = (data ?? []) as { amount: number | string }[];
-          const total = rows.reduce((a, r) => a + Number(r.amount), 0);
-          if (total > 0) setF((p) => ({ ...p, amount: total.toFixed(2).replace('.', ',') }));
-        });
-    }
-  }, [initial, month, me.id, supabase]);
+  }, [initial, month, me.id]);
 
   // aceita "1.234,56", "1234,56" e "1234.56"
   const parseAmount = (v: string) => Number(v.includes(',') ? v.replace(/\./g, '').replace(',', '.') : v);
@@ -305,6 +297,9 @@ function TxForm({ month, initial, onClose, onSaved }: {
     const count = Number(f.count);
 
     if (f.repeat !== 'single' && !(count >= 2 && count <= 60)) return setErr('Quantidade deve ser entre 2 e 60.');
+    const number = f.repeat === 'installment' ? Number(f.number) : f.repeat === 'recurring' ? Math.min(Number(f.number) || 1, count) : 1;
+    if (f.repeat === 'installment' && !(number >= 1 && number <= count)) return setErr(`A parcela atual deve estar entre 1 e ${count}.`);
+    const amountIsTotal = f.repeat === 'installment' && f.amountMode === 'total';
 
     const wasSeries = !!initial?.series_id;
     if (initial?.id && wasSeries && f.repeat === 'single'
@@ -318,6 +313,7 @@ function TxForm({ month, initial, onClose, onSaved }: {
         p_tx_id: initial.id, p_kind: f.repeat, p_count: f.repeat === 'single' ? 1 : count,
         p_type: f.type, p_description: f.description.trim(), p_amount: amount, p_category: f.category,
         p_date: f.date, p_payer_id: f.payer_id || null, p_status: f.status,
+        p_number: number, p_amount_is_total: amountIsTotal,
       }));
     } else if (initial?.id) {
       ({ error } = await supabase.from('transactions').update({
@@ -333,6 +329,7 @@ function TxForm({ month, initial, onClose, onSaved }: {
       ({ error } = await supabase.rpc('create_transaction_series', {
         p_type: f.type, p_description: f.description.trim(), p_amount: amount, p_category: f.category,
         p_date: f.date, p_payer_id: f.payer_id || null, p_status: f.status, p_kind: f.repeat, p_count: count,
+        p_number: f.repeat === 'installment' ? number : 1, p_amount_is_total: amountIsTotal,
       }));
     }
     setSaving(false);
@@ -353,8 +350,13 @@ function TxForm({ month, initial, onClose, onSaved }: {
   }
 
   const isSeries = !!initial?.series_id;
-  const perInstallment = f.repeat === 'installment' && parseAmount(f.amount) > 0 && Number(f.count) >= 2
-    ? formatBRL(parseAmount(f.amount) / Number(f.count)) : null;
+  const amt = parseAmount(f.amount);
+  const cnt = Number(f.count);
+  const installmentHint = f.repeat === 'installment' && amt > 0 && cnt >= 2
+    ? f.amountMode === 'total'
+      ? `${cnt}x de ${formatBRL(amt / cnt)}`
+      : `total ${formatBRL(amt * cnt)}`
+    : null;
 
   return (
     <Sheet open={!!initial} onClose={onClose} title={initial?.id ? 'Editar lançamento' : 'Novo lançamento'}>
@@ -428,15 +430,37 @@ function TxForm({ month, initial, onClose, onSaved }: {
                 { value: 'recurring', label: 'Mensal' },
               ]}
             />
-            {f.repeat !== 'single' && (
+            {f.repeat === 'installment' && (
+              <div className="mt-3 space-y-3">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-stone-600">Parcela</span>
+                  <input className="input w-16 px-2 text-center" type="number" inputMode="numeric" min={1} max={Number(f.count) || 60}
+                    value={f.number} onChange={(e) => setF({ ...f, number: e.target.value })} aria-label="Parcela atual" />
+                  <span className="text-stone-600">de</span>
+                  <input className="input w-16 px-2 text-center" type="number" inputMode="numeric" min={2} max={60}
+                    value={f.count} onChange={(e) => setF({ ...f, count: e.target.value })} aria-label="Total de parcelas" />
+                </div>
+                <div>
+                  <p className="mb-1 text-xs text-stone-500">O valor digitado é:</p>
+                  <Segmented<'total' | 'each'>
+                    value={f.amountMode}
+                    onChange={(amountMode) => setF({ ...f, amountMode })}
+                    options={[{ value: 'each', label: 'Valor da parcela' }, { value: 'total', label: 'Total da compra' }]}
+                  />
+                  {installmentHint && <p className="mt-1.5 text-xs text-stone-600">= {installmentHint}</p>}
+                </div>
+                {Number(f.number) > 1 && (
+                  <p className="text-[11px] text-stone-400">
+                    A data acima é a da parcela {f.number}. {initial?.id ? '' : `Serão lançadas da ${f.number}ª à ${f.count}ª.`}
+                  </p>
+                )}
+              </div>
+            )}
+            {f.repeat === 'recurring' && (
               <div className="mt-3 flex items-center gap-2 text-sm">
                 <input className="input w-20 text-center" type="number" min={2} max={60} value={f.count}
                   onChange={(e) => setF({ ...f, count: e.target.value })} />
-                <span className="text-stone-600">
-                  {f.repeat === 'installment'
-                    ? <>parcelas{perInstallment && <> de <b>{perInstallment}</b></>} (valor acima = total)</>
-                    : 'meses (valor acima = cada mês)'}
-                </span>
+                <span className="text-stone-600">meses (valor acima = cada mês)</span>
               </div>
             )}
             {f.repeat !== 'single' && (
