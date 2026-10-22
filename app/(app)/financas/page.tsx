@@ -276,10 +276,23 @@ function TxForm({ month, initial, onClose, onSaved }: {
       date: initial.date ?? defaultDate,
       payer_id: initial.id ? (initial.payer_id ?? '') : me.id,
       status: initial.status ?? 'paid',
-      repeat: 'single',
-      count: '2',
+      repeat: (initial.series_kind ?? 'single') as RepeatMode,
+      count: String(initial.installment_total ?? 2),
     });
-  }, [initial, month, me.id]);
+
+    // Parcelado: no formulário o valor mostrado é o TOTAL da compra (soma das parcelas)
+    if (initial.series_id && initial.series_kind === 'installment') {
+      supabase
+        .from('transactions')
+        .select('amount')
+        .eq('series_id', initial.series_id)
+        .then(({ data }) => {
+          const rows = (data ?? []) as { amount: number | string }[];
+          const total = rows.reduce((a, r) => a + Number(r.amount), 0);
+          if (total > 0) setF((p) => ({ ...p, amount: total.toFixed(2).replace('.', ',') }));
+        });
+    }
+  }, [initial, month, me.id, supabase]);
 
   // aceita "1.234,56", "1234,56" e "1234.56"
   const parseAmount = (v: string) => Number(v.includes(',') ? v.replace(/\./g, '').replace(',', '.') : v);
@@ -291,9 +304,22 @@ function TxForm({ month, initial, onClose, onSaved }: {
     if (!(amount > 0)) return setErr('Informe um valor maior que zero.');
     const count = Number(f.count);
 
+    if (f.repeat !== 'single' && !(count >= 2 && count <= 60)) return setErr('Quantidade deve ser entre 2 e 60.');
+
+    const wasSeries = !!initial?.series_id;
+    if (initial?.id && wasSeries && f.repeat === 'single'
+      && !confirm('Transformar a série inteira em um único lançamento? As outras parcelas serão removidas.')) return;
+
     setSaving(true);
-    let error;
-    if (initial?.id) {
+    let error: { message: string } | null = null;
+    if (initial?.id && (wasSeries || f.repeat !== 'single')) {
+      // muda parcelas/recorrência: refaz a série inteira no banco
+      ({ error } = await supabase.rpc('rebuild_transaction_series', {
+        p_tx_id: initial.id, p_kind: f.repeat, p_count: f.repeat === 'single' ? 1 : count,
+        p_type: f.type, p_description: f.description.trim(), p_amount: amount, p_category: f.category,
+        p_date: f.date, p_payer_id: f.payer_id || null, p_status: f.status,
+      }));
+    } else if (initial?.id) {
       ({ error } = await supabase.from('transactions').update({
         type: f.type, description: f.description.trim(), amount, category: f.category,
         date: f.date, payer_id: f.payer_id || null, status: f.status,
@@ -304,7 +330,6 @@ function TxForm({ month, initial, onClose, onSaved }: {
         date: f.date, payer_id: f.payer_id || null, status: f.status,
       }));
     } else {
-      if (!(count >= 2 && count <= 60)) { setSaving(false); return setErr('Quantidade deve ser entre 2 e 60.'); }
       ({ error } = await supabase.rpc('create_transaction_series', {
         p_type: f.type, p_description: f.description.trim(), p_amount: amount, p_category: f.category,
         p_date: f.date, p_payer_id: f.payer_id || null, p_status: f.status, p_kind: f.repeat, p_count: count,
@@ -385,9 +410,15 @@ function TxForm({ month, initial, onClose, onSaved }: {
           />
         </div>
 
-        {!initial?.id && (
-          <div className="rounded-xl bg-stone-50 p-3">
-            <label className="label">Repetição</label>
+        <div className="rounded-xl bg-stone-50 p-3">
+            <label className="label">
+              Repetição
+              {isSeries && initial?.installment_number && (
+                <span className="ml-1 normal-case tracking-normal text-stone-400">
+                  · editando a {initial.installment_number}ª de {initial.installment_total}
+                </span>
+              )}
+            </label>
             <Segmented<RepeatMode>
               value={f.repeat}
               onChange={(repeat) => setF({ ...f, repeat })}
@@ -408,9 +439,14 @@ function TxForm({ month, initial, onClose, onSaved }: {
                 </span>
               </div>
             )}
-            {f.repeat !== 'single' && <p className="mt-2 text-[11px] text-stone-400">As ocorrências futuras são criadas como pendentes.</p>}
+            {f.repeat !== 'single' && (
+              <p className="mt-2 text-[11px] text-stone-400">
+                {initial?.id
+                  ? 'Ao salvar, a série inteira é refeita com esses dados. Parcelas já pagas continuam pagas; as novas entram como pendentes.'
+                  : 'As ocorrências futuras são criadas como pendentes.'}
+              </p>
+            )}
           </div>
-        )}
 
         {err && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{err}</p>}
 
