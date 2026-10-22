@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#d12d48" />
+  <title>Sem conexão — Nós Dois</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #fafaf9;
+           font-family: system-ui, -apple-system, sans-serif; color: #1c1917; text-align: center; padding: 24px; }
+    .icon { font-size: 48px; }
+    h1 { font-size: 20px; margin: 12px 0 4px; }
+    p { color: #78716c; font-size: 14px; margin: 0 0 20px; }
+    button { background: #d12d48; color: #fff; border: 0; border-radius: 12px; padding: 12px 20px; font-weight: 600; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div>
+    <div class="icon">📡</div>
+    <h1>Você está offline</h1>
+    <p>Conecte-se à internet para ver a agenda e as finanças atualizadas.</p>
+    <button onclick="location.reload()">Tentar novamente</button>
+  </div>
+</body>
+</html>
